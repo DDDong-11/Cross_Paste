@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import socket
 import sys
 import threading
 import time
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
@@ -121,18 +123,21 @@ def add_agent_parser(subparsers, name: str, help_text: str) -> None:
 def run_server(platform_name: str, host: str, port: int, poll_interval: float) -> int:
     validate_platform(platform_name)
     state = LatestClipboardState()
+    device_id = build_device_id(platform_name)
     return run_watcher_and_server(
         state=state,
         host=host,
         port=port,
         watch_interval=poll_interval,
         startup_label=f"{platform_name} server",
+        local_device_id=device_id,
     )
 
 
 def run_client(platform_name: str, server_url: str, poll_interval: float, request_timeout: float) -> int:
     validate_platform(platform_name)
     state = LatestClipboardState()
+    device_id = build_device_id(platform_name)
     LOGGER.info("%s client polling %s", platform_name.capitalize(), server_url)
     return run_poll_loop(
         state=state,
@@ -140,6 +145,7 @@ def run_client(platform_name: str, server_url: str, poll_interval: float, reques
         poll_interval=poll_interval,
         request_timeout=request_timeout,
         write_incoming=True,
+        local_device_id=device_id,
     )
 
 
@@ -155,6 +161,7 @@ def run_agent(
     validate_platform(platform_name)
     state = LatestClipboardState()
     stop_event = threading.Event()
+    device_id = build_device_id(platform_name)
 
     server_thread = threading.Thread(
         target=run_server_background,
@@ -165,6 +172,7 @@ def run_agent(
             "watch_interval": watch_interval,
             "stop_event": stop_event,
             "startup_label": f"{platform_name} agent",
+            "local_device_id": device_id,
         },
         name=f"{platform_name}-agent-server",
         daemon=True,
@@ -179,6 +187,7 @@ def run_agent(
             poll_interval=poll_interval,
             request_timeout=request_timeout,
             write_incoming=True,
+            local_device_id=device_id,
         )
     finally:
         stop_event.set()
@@ -190,6 +199,7 @@ def run_watcher_and_server(
     port: int,
     watch_interval: float,
     startup_label: str,
+    local_device_id: str,
 ) -> int:
     stop_event = threading.Event()
     return run_server_background(
@@ -199,6 +209,7 @@ def run_watcher_and_server(
         watch_interval=watch_interval,
         stop_event=stop_event,
         startup_label=startup_label,
+        local_device_id=local_device_id,
     )
 
 
@@ -209,10 +220,16 @@ def run_server_background(
     watch_interval: float,
     stop_event: threading.Event,
     startup_label: str,
+    local_device_id: str,
 ) -> int:
     watcher_thread = threading.Thread(
         target=watch_local_clipboard,
-        kwargs={"state": state, "stop_event": stop_event, "poll_interval": watch_interval},
+        kwargs={
+            "state": state,
+            "stop_event": stop_event,
+            "poll_interval": watch_interval,
+            "local_device_id": local_device_id,
+        },
         name="clipboard-watcher",
         daemon=True,
     )
@@ -236,12 +253,17 @@ def run_server_background(
     return 0
 
 
-def watch_local_clipboard(state: LatestClipboardState, stop_event: threading.Event, poll_interval: float) -> None:
+def watch_local_clipboard(
+    state: LatestClipboardState,
+    stop_event: threading.Event,
+    poll_interval: float,
+    local_device_id: str,
+) -> None:
     while not stop_event.is_set():
         try:
             content = read_local_clipboard_content()
             if content is not None:
-                snapshot = state.update_if_changed(content)
+                snapshot = state.update_if_changed(content, local_device_id)
                 if snapshot:
                     LOGGER.info(
                         "Captured local clipboard: kind=%s version=%s bytes=%s",
@@ -289,6 +311,7 @@ def snapshot_to_wire(snapshot: ClipboardSnapshot) -> dict:
         "version": snapshot.version,
         "digest": snapshot.digest,
         "updatedAt": snapshot.updated_at,
+        "sourceDeviceId": snapshot.source_device_id,
         "content": snapshot.content.to_wire(),
     }
 
@@ -299,7 +322,10 @@ def run_poll_loop(
     poll_interval: float,
     request_timeout: float,
     write_incoming: bool,
+    local_device_id: str,
 ) -> int:
+    last_seen_remote_digest: Optional[str] = None
+
     while True:
         try:
             snapshot = fetch_latest_snapshot(server_url, request_timeout)
@@ -307,8 +333,13 @@ def run_poll_loop(
                 time.sleep(poll_interval)
                 continue
 
-            current_digest = state.current_digest()
-            if snapshot.digest == current_digest:
+            if snapshot.digest == last_seen_remote_digest:
+                time.sleep(poll_interval)
+                continue
+
+            last_seen_remote_digest = snapshot.digest
+
+            if snapshot.source_device_id == local_device_id:
                 time.sleep(poll_interval)
                 continue
 
@@ -320,7 +351,7 @@ def run_poll_loop(
                 time.sleep(poll_interval)
                 continue
 
-            state.update_if_changed(snapshot.content)
+            state.update_if_changed(snapshot.content, snapshot.source_device_id)
             if write_incoming:
                 write_local_clipboard_content(snapshot.content)
                 LOGGER.info(
@@ -360,7 +391,12 @@ def fetch_latest_snapshot(server_url: str, request_timeout: float) -> Optional[C
         content=content,
         digest=str(payload["digest"]),
         updated_at=float(payload["updatedAt"]),
+        source_device_id=str(payload.get("sourceDeviceId", "")),
     )
+
+
+def build_device_id(platform_name: str) -> str:
+    return f"{platform_name}-{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 
 
 def validate_platform(platform_name: str) -> None:

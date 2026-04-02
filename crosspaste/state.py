@@ -14,6 +14,7 @@ class ClipboardSnapshot:
     content: ClipboardContent
     digest: str
     updated_at: float
+    source_device_id: str
 
 
 class LatestClipboardState:
@@ -23,8 +24,9 @@ class LatestClipboardState:
         self._content: Optional[ClipboardContent] = None
         self._digest = ""
         self._updated_at = 0.0
+        self._source_device_id = ""
 
-    def update_if_changed(self, content: ClipboardContent) -> Optional[ClipboardSnapshot]:
+    def update_if_changed(self, content: ClipboardContent, source_device_id: str) -> Optional[ClipboardSnapshot]:
         digest = content.digest()
 
         with self._lock:
@@ -35,11 +37,13 @@ class LatestClipboardState:
             self._content = content
             self._digest = digest
             self._updated_at = time()
+            self._source_device_id = source_device_id
             return ClipboardSnapshot(
                 version=self._version,
                 content=content,
                 digest=self._digest,
                 updated_at=self._updated_at,
+                source_device_id=self._source_device_id,
             )
 
     def snapshot(self) -> Optional[ClipboardSnapshot]:
@@ -52,6 +56,7 @@ class LatestClipboardState:
                 content=self._content,
                 digest=self._digest,
                 updated_at=self._updated_at,
+                source_device_id=self._source_device_id,
             )
 
     def current_digest(self) -> Optional[str]:
