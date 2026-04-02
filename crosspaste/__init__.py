@@ -1,0 +1,2 @@
+"""CrossPaste MVP package."""
+
