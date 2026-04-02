@@ -11,8 +11,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 from urllib import error, request
 
-from .clipboard import read_macos_clipboard_text, write_windows_clipboard_text
-from .state import LatestClipboardState
+from .clipboard import read_local_clipboard_content, write_local_clipboard_content
+from .content import ClipboardContent
+from .state import ClipboardSnapshot, LatestClipboardState
 
 
 LOGGER = logging.getLogger("crosspaste")
@@ -21,91 +22,237 @@ LOGGER = logging.getLogger("crosspaste")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="crosspaste",
-        description="Minimal LAN clipboard sync for Mac to Windows text copy/paste.",
+        description="Minimal LAN clipboard sync for macOS and Windows.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    mac_server = subparsers.add_parser(
+    add_server_parser(
+        subparsers,
         "mac-server",
-        help="Run on macOS. Watches the local clipboard and exposes the latest text over HTTP.",
+        "Run on macOS. Watches the local clipboard and exposes the latest item over HTTP.",
     )
-    mac_server.add_argument("--host", default="0.0.0.0", help="Bind host for the HTTP server.")
-    mac_server.add_argument("--port", type=int, default=45892, help="Bind port for the HTTP server.")
-    mac_server.add_argument(
+    add_server_parser(
+        subparsers,
+        "windows-server",
+        "Run on Windows. Watches the local clipboard and exposes the latest item over HTTP.",
+    )
+    add_client_parser(
+        subparsers,
+        "mac-client",
+        "Run on macOS. Polls a peer server and writes new content into the local clipboard.",
+    )
+    add_client_parser(
+        subparsers,
+        "windows-client",
+        "Run on Windows. Polls a peer server and writes new content into the local clipboard.",
+    )
+    add_agent_parser(
+        subparsers,
+        "mac-agent",
+        "Run on macOS. Watches the local clipboard, serves it, and also pulls from Windows.",
+    )
+    add_agent_parser(
+        subparsers,
+        "windows-agent",
+        "Run on Windows. Watches the local clipboard, serves it, and also pulls from macOS.",
+    )
+
+    return parser
+
+
+def add_server_parser(subparsers, name: str, help_text: str) -> None:
+    parser = subparsers.add_parser(name, help=help_text)
+    parser.add_argument("--host", default="0.0.0.0", help="Bind host for the HTTP server.")
+    parser.add_argument("--port", type=int, default=45892, help="Bind port for the HTTP server.")
+    parser.add_argument(
         "--poll-interval",
         type=float,
         default=0.5,
-        help="Seconds between clipboard polls on macOS.",
+        help="Seconds between clipboard polls on the local machine.",
     )
 
-    windows_client = subparsers.add_parser(
-        "windows-client",
-        help="Run on Windows. Polls the macOS server and writes new text into the local clipboard.",
-    )
-    windows_client.add_argument(
+
+def add_client_parser(subparsers, name: str, help_text: str) -> None:
+    parser = subparsers.add_parser(name, help=help_text)
+    parser.add_argument(
         "--server-url",
         required=True,
-        help="Mac server URL, for example http://192.168.1.10:45892/latest",
+        help="Peer server URL, for example http://192.168.1.10:45892/latest",
     )
-    windows_client.add_argument(
+    parser.add_argument(
         "--poll-interval",
         type=float,
         default=0.8,
-        help="Seconds between HTTP polls from Windows.",
+        help="Seconds between HTTP polls.",
     )
-    windows_client.add_argument(
+    parser.add_argument(
         "--request-timeout",
         type=float,
         default=3.0,
         help="HTTP request timeout in seconds.",
     )
 
-    return parser
+
+def add_agent_parser(subparsers, name: str, help_text: str) -> None:
+    parser = subparsers.add_parser(name, help=help_text)
+    parser.add_argument("--peer-url", required=True, help="Peer server URL, for example http://192.168.1.10:45892/latest")
+    parser.add_argument("--host", default="0.0.0.0", help="Bind host for the local HTTP server.")
+    parser.add_argument("--port", type=int, default=45892, help="Bind port for the local HTTP server.")
+    parser.add_argument(
+        "--watch-interval",
+        type=float,
+        default=0.5,
+        help="Seconds between local clipboard polls.",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=0.8,
+        help="Seconds between peer HTTP polls.",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=3.0,
+        help="HTTP request timeout in seconds.",
+    )
 
 
-def run_mac_server(host: str, port: int, poll_interval: float) -> int:
-    if sys.platform != "darwin":
-        LOGGER.error("mac-server must run on macOS.")
-        return 1
+def run_server(platform_name: str, host: str, port: int, poll_interval: float) -> int:
+    validate_platform(platform_name)
+    state = LatestClipboardState()
+    return run_watcher_and_server(
+        state=state,
+        host=host,
+        port=port,
+        watch_interval=poll_interval,
+        startup_label=f"{platform_name} server",
+    )
 
+
+def run_client(platform_name: str, server_url: str, poll_interval: float, request_timeout: float) -> int:
+    validate_platform(platform_name)
+    state = LatestClipboardState()
+    LOGGER.info("%s client polling %s", platform_name.capitalize(), server_url)
+    return run_poll_loop(
+        state=state,
+        server_url=server_url,
+        poll_interval=poll_interval,
+        request_timeout=request_timeout,
+        write_incoming=True,
+    )
+
+
+def run_agent(
+    platform_name: str,
+    peer_url: str,
+    host: str,
+    port: int,
+    watch_interval: float,
+    poll_interval: float,
+    request_timeout: float,
+) -> int:
+    validate_platform(platform_name)
     state = LatestClipboardState()
     stop_event = threading.Event()
 
-    def watcher() -> None:
-        while not stop_event.is_set():
-            try:
-                text = read_macos_clipboard_text()
-                if text:
-                    snapshot = state.update_if_changed(text)
-                    if snapshot:
-                        LOGGER.info(
-                            "Captured new clipboard text: version=%s chars=%s",
-                            snapshot.version,
-                            len(snapshot.text),
-                        )
-            except Exception as exc:  # pragma: no cover - defensive logging for local OS calls
-                LOGGER.warning("Clipboard poll failed: %s", exc)
+    server_thread = threading.Thread(
+        target=run_server_background,
+        kwargs={
+            "state": state,
+            "host": host,
+            "port": port,
+            "watch_interval": watch_interval,
+            "stop_event": stop_event,
+            "startup_label": f"{platform_name} agent",
+        },
+        name=f"{platform_name}-agent-server",
+        daemon=True,
+    )
+    server_thread.start()
 
-            stop_event.wait(poll_interval)
+    LOGGER.info("%s agent polling peer %s", platform_name.capitalize(), peer_url)
+    try:
+        return run_poll_loop(
+            state=state,
+            server_url=peer_url,
+            poll_interval=poll_interval,
+            request_timeout=request_timeout,
+            write_incoming=True,
+        )
+    finally:
+        stop_event.set()
+
+
+def run_watcher_and_server(
+    state: LatestClipboardState,
+    host: str,
+    port: int,
+    watch_interval: float,
+    startup_label: str,
+) -> int:
+    stop_event = threading.Event()
+    return run_server_background(
+        state=state,
+        host=host,
+        port=port,
+        watch_interval=watch_interval,
+        stop_event=stop_event,
+        startup_label=startup_label,
+    )
+
+
+def run_server_background(
+    state: LatestClipboardState,
+    host: str,
+    port: int,
+    watch_interval: float,
+    stop_event: threading.Event,
+    startup_label: str,
+) -> int:
+    watcher_thread = threading.Thread(
+        target=watch_local_clipboard,
+        kwargs={"state": state, "stop_event": stop_event, "poll_interval": watch_interval},
+        name="clipboard-watcher",
+        daemon=True,
+    )
+    watcher_thread.start()
 
     handler = make_http_handler(state)
     server = ThreadingHTTPServer((host, port), handler)
-    watcher_thread = threading.Thread(target=watcher, name="clipboard-watcher", daemon=True)
-    watcher_thread.start()
 
-    LOGGER.info("Mac server listening on http://%s:%s/latest", host, port)
-    LOGGER.info("Use your Mac LAN IP from the Windows machine, for example http://192.168.x.x:%s/latest", port)
+    LOGGER.info("%s listening on http://%s:%s/latest", startup_label.capitalize(), host, port)
 
     try:
-        server.serve_forever()
+        while not stop_event.is_set():
+            server.timeout = 0.5
+            server.handle_request()
     except KeyboardInterrupt:
-        LOGGER.info("Shutting down mac server.")
+        LOGGER.info("Shutting down %s.", startup_label)
     finally:
         stop_event.set()
-        server.shutdown()
         server.server_close()
 
     return 0
+
+
+def watch_local_clipboard(state: LatestClipboardState, stop_event: threading.Event, poll_interval: float) -> None:
+    while not stop_event.is_set():
+        try:
+            content = read_local_clipboard_content()
+            if content is not None:
+                snapshot = state.update_if_changed(content)
+                if snapshot:
+                    LOGGER.info(
+                        "Captured local clipboard: kind=%s version=%s bytes=%s",
+                        content.kind,
+                        snapshot.version,
+                        len(content.payload_base64),
+                    )
+        except Exception as exc:  # pragma: no cover
+            LOGGER.warning("Clipboard poll failed: %s", exc)
+
+        stop_event.wait(poll_interval)
 
 
 def make_http_handler(state: LatestClipboardState):
@@ -121,12 +268,7 @@ def make_http_handler(state: LatestClipboardState):
                 self.end_headers()
                 return
 
-            payload = {
-                "version": snapshot.version,
-                "digest": snapshot.digest,
-                "text": snapshot.text,
-                "updatedAt": snapshot.updated_at,
-            }
+            payload = snapshot_to_wire(snapshot)
             body = json.dumps(payload).encode("utf-8")
 
             self.send_response(HTTPStatus.OK)
@@ -141,15 +283,23 @@ def make_http_handler(state: LatestClipboardState):
     return LatestHandler
 
 
-def run_windows_client(server_url: str, poll_interval: float, request_timeout: float) -> int:
-    if sys.platform != "win32":
-        LOGGER.error("windows-client must run on Windows.")
-        return 1
+def snapshot_to_wire(snapshot: ClipboardSnapshot) -> dict:
+    return {
+        "protocolVersion": 2,
+        "version": snapshot.version,
+        "digest": snapshot.digest,
+        "updatedAt": snapshot.updated_at,
+        "content": snapshot.content.to_wire(),
+    }
 
-    last_digest: Optional[str] = None
 
-    LOGGER.info("Windows client polling %s", server_url)
-
+def run_poll_loop(
+    state: LatestClipboardState,
+    server_url: str,
+    poll_interval: float,
+    request_timeout: float,
+    write_incoming: bool,
+) -> int:
     while True:
         try:
             snapshot = fetch_latest_snapshot(server_url, request_timeout)
@@ -157,24 +307,38 @@ def run_windows_client(server_url: str, poll_interval: float, request_timeout: f
                 time.sleep(poll_interval)
                 continue
 
-            digest = snapshot["digest"]
-            text = snapshot["text"]
-            version = snapshot["version"]
+            current_digest = state.current_digest()
+            if snapshot.digest == current_digest:
+                time.sleep(poll_interval)
+                continue
 
-            if digest != last_digest:
-                write_windows_clipboard_text(text)
-                last_digest = digest
-                LOGGER.info("Updated Windows clipboard: version=%s chars=%s", version, len(text))
+            if snapshot.content.kind != "text":
+                LOGGER.info(
+                    "Peer sent unsupported clipboard kind '%s'. Current build only applies text content.",
+                    snapshot.content.kind,
+                )
+                time.sleep(poll_interval)
+                continue
+
+            state.update_if_changed(snapshot.content)
+            if write_incoming:
+                write_local_clipboard_content(snapshot.content)
+                LOGGER.info(
+                    "Applied peer clipboard: kind=%s version=%s bytes=%s",
+                    snapshot.content.kind,
+                    snapshot.version,
+                    len(snapshot.content.payload_base64),
+                )
         except KeyboardInterrupt:
-            LOGGER.info("Stopping Windows client.")
+            LOGGER.info("Stopping poll loop.")
             return 0
-        except Exception as exc:  # pragma: no cover - defensive logging for network/OS calls
+        except Exception as exc:  # pragma: no cover
             LOGGER.warning("Poll failed: %s", exc)
 
         time.sleep(poll_interval)
 
 
-def fetch_latest_snapshot(server_url: str, request_timeout: float) -> Optional[dict]:
+def fetch_latest_snapshot(server_url: str, request_timeout: float) -> Optional[ClipboardSnapshot]:
     req = request.Request(server_url, method="GET")
 
     try:
@@ -189,10 +353,22 @@ def fetch_latest_snapshot(server_url: str, request_timeout: float) -> Optional[d
         raise
 
     payload = json.loads(raw.decode("utf-8"))
-    if not isinstance(payload.get("text"), str):
-        raise ValueError("Server returned invalid text payload")
+    content = ClipboardContent.from_wire(payload["content"])
 
-    return payload
+    return ClipboardSnapshot(
+        version=int(payload["version"]),
+        content=content,
+        digest=str(payload["digest"]),
+        updated_at=float(payload["updatedAt"]),
+    )
+
+
+def validate_platform(platform_name: str) -> None:
+    if platform_name == "mac" and sys.platform != "darwin":
+        raise SystemExit("This command must run on macOS.")
+
+    if platform_name == "windows" and sys.platform != "win32":
+        raise SystemExit("This command must run on Windows.")
 
 
 def configure_logging() -> None:
@@ -208,11 +384,38 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "mac-server":
-        return run_mac_server(args.host, args.port, args.poll_interval)
+        return run_server("mac", args.host, args.port, args.poll_interval)
+
+    if args.command == "windows-server":
+        return run_server("windows", args.host, args.port, args.poll_interval)
+
+    if args.command == "mac-client":
+        return run_client("mac", args.server_url, args.poll_interval, args.request_timeout)
 
     if args.command == "windows-client":
-        return run_windows_client(args.server_url, args.poll_interval, args.request_timeout)
+        return run_client("windows", args.server_url, args.poll_interval, args.request_timeout)
+
+    if args.command == "mac-agent":
+        return run_agent(
+            "mac",
+            args.peer_url,
+            args.host,
+            args.port,
+            args.watch_interval,
+            args.poll_interval,
+            args.request_timeout,
+        )
+
+    if args.command == "windows-agent":
+        return run_agent(
+            "windows",
+            args.peer_url,
+            args.host,
+            args.port,
+            args.watch_interval,
+            args.poll_interval,
+            args.request_timeout,
+        )
 
     parser.error("unknown command")
     return 2
-
