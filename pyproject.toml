@@ -1,0 +1,16 @@
+[project]
+name = "crosspaste"
+version = "0.2.0"
+description = "Minimal LAN clipboard sync for macOS and Windows (with image support)"
+requires-python = ">=3.8"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

@@ -12,6 +12,10 @@ class ClipboardContent:
     encoding: str
     payload_base64: str
 
+    MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB
+
+    MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB
+
     @classmethod
     def from_text(cls, text: str) -> "ClipboardContent":
         normalized = text.replace("\r\n", "\n")
@@ -19,6 +23,34 @@ class ClipboardContent:
         return cls(
             kind="text",
             mime_type="text/plain; charset=utf-8",
+            encoding="base64",
+            payload_base64=payload,
+        )
+
+    @classmethod
+    def from_image(cls, png_bytes: bytes) -> "ClipboardContent":
+        if len(png_bytes) > cls.MAX_IMAGE_BYTES:
+            raise ValueError(
+                f"Image size {len(png_bytes)} bytes exceeds maximum size {cls.MAX_IMAGE_BYTES} bytes"
+            )
+        payload = base64.b64encode(png_bytes).decode("ascii")
+        return cls(
+            kind="image",
+            mime_type="image/png",
+            encoding="base64",
+            payload_base64=payload,
+        )
+
+    @classmethod
+    def from_image(cls, png_bytes: bytes) -> "ClipboardContent":
+        if len(png_bytes) > cls.MAX_IMAGE_BYTES:
+            raise ValueError(
+                f"Image size {len(png_bytes)} bytes exceeds maximum size {cls.MAX_IMAGE_BYTES} bytes"
+            )
+        payload = base64.b64encode(png_bytes).decode("ascii")
+        return cls(
+            kind="image",
+            mime_type="image/png",
             encoding="base64",
             payload_base64=payload,
         )
@@ -52,6 +84,12 @@ class ClipboardContent:
             raise ValueError(f"Unsupported clipboard content kind: {self.kind}")
 
         return base64.b64decode(self.payload_base64.encode("ascii")).decode("utf-8", errors="replace")
+
+    def to_image_bytes(self) -> bytes:
+        if self.kind != "image":
+            raise ValueError(f"Clipboard content is not an image, kind: {self.kind}")
+
+        return base64.b64decode(self.payload_base64.encode("ascii"))
 
     def digest(self) -> str:
         material = "\0".join(

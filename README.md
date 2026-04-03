@@ -1,4 +1,4 @@
-# CrossPaste MVP
+# CrossPaste
 
 CrossPaste is a minimal LAN clipboard sync tool for macOS and Windows.
 
@@ -6,8 +6,9 @@ CrossPaste is a minimal LAN clipboard sync tool for macOS and Windows.
 
 - Only works inside the same local network.
 - Only keeps the latest clipboard item.
-- Today it applies text content end to end.
-- The wire protocol already carries typed content metadata so image support can be added later without redesigning the HTTP API.
+- Supports both text and image (PNG) content end to end.
+- When the clipboard contains both text and image, only the image is synced.
+- Images larger than 10MB are skipped.
 
 ## Project layout
 
@@ -25,7 +26,7 @@ CrossPaste is a minimal LAN clipboard sync tool for macOS and Windows.
 4. If the digest changed, the peer writes the new content into its local clipboard.
 5. In `agent` mode, one process handles local watching, local serving, and remote polling together, which keeps bidirectional sync simpler.
 
-## Recommended: Bidirectional Text Sync
+## Recommended: Bidirectional Sync
 
 Run one agent on each machine.
 
@@ -55,8 +56,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\start_agent.ps1 -Peer
 
 When both agents are running:
 
-- Copy text on Mac and paste on Windows.
-- Copy text on Windows and paste on Mac.
+- Copy text on Mac and paste on Windows (and vice versa).
+- Copy image on Mac and paste on Windows (and vice versa).
+- The latest clipboard item is synced — if you copy an image, the image syncs; if you copy text next, the text syncs.
 
 ## Legacy: One-Way Modes
 
@@ -106,7 +108,8 @@ scripts\windows\start_client.bat http://192.168.1.23:45892/latest
 
 - If the local clipboard is empty, the server keeps serving the last non-empty item it captured.
 - The Windows machine needs a copy of this project directory, or at least the `crosspaste` and `scripts` folders.
-- Windows clipboard access uses PowerShell `Get-Clipboard` and `Set-Clipboard`.
-- macOS clipboard access uses `pbpaste` and `pbcopy`.
-- The wire format now includes `kind`, `mimeType`, `encoding`, and `payloadBase64`.
-- This prepares the transport for images later, but the current build only reads and writes text on both platforms.
+- Windows clipboard access uses PowerShell `Get-Clipboard` and `Set-Clipboard` with `System.Drawing` for image handling.
+- macOS clipboard access uses `osascript` with AppKit `NSPasteboard` for both text and image.
+- Images are transferred as PNG (lossless). Maximum image size is 10MB.
+- When the clipboard contains both text and image, only the image is synced.
+- The wire format includes `kind`, `mimeType`, `encoding`, and `payloadBase64` to support both text and image content.

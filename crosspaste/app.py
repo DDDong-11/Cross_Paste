@@ -343,9 +343,9 @@ def run_poll_loop(
                 time.sleep(poll_interval)
                 continue
 
-            if snapshot.content.kind != "text":
+            if snapshot.content.kind not in ("text", "image"):
                 LOGGER.info(
-                    "Peer sent unsupported clipboard kind '%s'. Current build only applies text content.",
+                    "Peer sent unsupported clipboard kind '%s'. Skipping.",
                     snapshot.content.kind,
                 )
                 time.sleep(poll_interval)

@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+crosspaste/__init__.py
+crosspaste/__main__.py
+crosspaste/app.py
+crosspaste/clipboard.py
+crosspaste/content.py
+crosspaste/state.py
+crosspaste.egg-info/PKG-INFO
+crosspaste.egg-info/SOURCES.txt
+crosspaste.egg-info/dependency_links.txt
+crosspaste.egg-info/requires.txt
+crosspaste.egg-info/top_level.txt
+tests/test_content.py
