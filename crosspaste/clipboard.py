@@ -227,9 +227,10 @@ def _windows_write_clipboard_image(png_bytes: bytes) -> None:
 
         escaped_path = tmp_path.replace("'", "''")
         script = (
-            "Add-Type -AssemblyName System.Drawing; "
+            "Add-Type -AssemblyName System.Windows.Forms; "
             f"$img = [System.Drawing.Image]::FromFile('{escaped_path}'); "
-            "Set-Clipboard -Value $img -Format Image; "
+            "[System.Windows.Forms.Clipboard]::SetImage($img); "
+            "[System.Windows.Forms.Clipboard]::Flush(); "
             "$img.Dispose()"
         )
 
