@@ -399,7 +399,6 @@ def run_poll_loop(
                 try:
                     write_local_clipboard_content(snapshot.content)
                     state.update_if_changed(snapshot.content, snapshot.source_device_id)
-                    import time
                     time.sleep(0.2)
                     readback = read_local_clipboard_content()
                     if readback:
