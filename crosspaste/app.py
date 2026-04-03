@@ -16,6 +16,8 @@ from urllib import error, request
 from .clipboard import read_local_clipboard_content, write_local_clipboard_content
 from .content import ClipboardContent
 from .state import ClipboardSnapshot, LatestClipboardState
+from .discovery import PeerDiscovery
+from .discovery import PeerDiscovery
 
 
 LOGGER = logging.getLogger("crosspaste")
@@ -97,7 +99,8 @@ def add_client_parser(subparsers, name: str, help_text: str) -> None:
 
 def add_agent_parser(subparsers, name: str, help_text: str) -> None:
     parser = subparsers.add_parser(name, help=help_text)
-    parser.add_argument("--peer-url", required=True, help="Peer server URL, for example http://192.168.1.10:45892/latest")
+    parser.add_argument("--peer-url", default=None, help="Peer server URL, for example http://192.168.1.10:45892/latest")
+    parser.add_argument("--auto-discover", action="store_true", help="Auto-discover peers on the local network via UDP broadcast.")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host for the local HTTP server.")
     parser.add_argument("--port", type=int, default=45892, help="Bind port for the local HTTP server.")
     parser.add_argument(
@@ -151,17 +154,24 @@ def run_client(platform_name: str, server_url: str, poll_interval: float, reques
 
 def run_agent(
     platform_name: str,
-    peer_url: str,
+    peer_url: Optional[str],
     host: str,
     port: int,
     watch_interval: float,
     poll_interval: float,
     request_timeout: float,
+    auto_discover: bool = False,
 ) -> int:
     validate_platform(platform_name)
     state = LatestClipboardState()
     stop_event = threading.Event()
     device_id = build_device_id(platform_name)
+
+    discovery: Optional[PeerDiscovery] = None
+    if auto_discover:
+        discovery = PeerDiscovery(port)
+        discovery.start()
+        LOGGER.info("Auto-discovery started, waiting for peers...")
 
     server_thread = threading.Thread(
         target=run_server_background,
@@ -179,11 +189,30 @@ def run_agent(
     )
     server_thread.start()
 
-    LOGGER.info("%s agent polling peer %s", platform_name.capitalize(), peer_url)
+    actual_peer_url = peer_url
+    if auto_discover and not peer_url:
+        assert discovery is not None
+        while not stop_event.is_set():
+            peers = discovery.get_known_peers()
+            if peers:
+                peer_ip = peers[0]
+                actual_peer_url = f"http://{peer_ip}:{port}/latest"
+                LOGGER.info("Auto-discovered peer: %s", actual_peer_url)
+                break
+            stop_event.wait(1.0)
+
+    if not actual_peer_url:
+        LOGGER.error("No peer URL provided and no peers discovered. Exiting.")
+        stop_event.set()
+        if discovery:
+            discovery.stop()
+        return 1
+
+    LOGGER.info("%s agent polling peer %s", platform_name.capitalize(), actual_peer_url)
     try:
         return run_poll_loop(
             state=state,
-            server_url=peer_url,
+            server_url=actual_peer_url,
             poll_interval=poll_interval,
             request_timeout=request_timeout,
             write_incoming=True,
@@ -191,6 +220,26 @@ def run_agent(
         )
     finally:
         stop_event.set()
+        if discovery:
+            discovery.stop()
+        if discovery:
+            discovery.stop()
+        return 1
+
+    LOGGER.info("%s agent polling peer %s", platform_name.capitalize(), actual_peer_url)
+    try:
+        return run_poll_loop(
+            state=state,
+            server_url=actual_peer_url,
+            poll_interval=poll_interval,
+            request_timeout=request_timeout,
+            write_incoming=True,
+            local_device_id=device_id,
+        )
+    finally:
+        stop_event.set()
+        if discovery:
+            discovery.stop()
 
 
 def run_watcher_and_server(
@@ -440,6 +489,7 @@ def main() -> int:
             args.watch_interval,
             args.poll_interval,
             args.request_timeout,
+            args.auto_discover,
         )
 
     if args.command == "windows-agent":
@@ -451,6 +501,19 @@ def main() -> int:
             args.watch_interval,
             args.poll_interval,
             args.request_timeout,
+            args.auto_discover,
+        )
+
+    if args.command == "windows-agent":
+        return run_agent(
+            "windows",
+            args.peer_url,
+            args.host,
+            args.port,
+            args.watch_interval,
+            args.poll_interval,
+            args.request_timeout,
+            args.auto_discover,
         )
 
     parser.error("unknown command")

@@ -33,6 +33,68 @@ def _macos_has_image_in_clipboard() -> bool:
     return result.stdout.decode("utf-8", errors="replace").strip() == "yes"
 
 
+def _macos_compress_image_to_jpeg(source_path: str, max_size: int = 500_000) -> Optional[bytes]:
+    quality = 85
+    jpeg_path = None
+    try:
+        while quality >= 30:
+            fd, jpeg_path = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            result = subprocess.run(
+                ["sips", "-s", "format", "jpeg", "-s", "formatOptions", str(quality),
+                 source_path, "--out", jpeg_path],
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode != 0 or not os.path.exists(jpeg_path):
+                return None
+            size = os.path.getsize(jpeg_path)
+            if size <= max_size:
+                with open(jpeg_path, "rb") as f:
+                    return f.read()
+            os.unlink(jpeg_path)
+            jpeg_path = None
+            quality -= 10
+        if jpeg_path and os.path.exists(jpeg_path):
+            with open(jpeg_path, "rb") as f:
+                return f.read()
+    finally:
+        if jpeg_path and os.path.exists(jpeg_path):
+            os.unlink(jpeg_path)
+    return None
+
+
+def _macos_compress_image_to_jpeg(source_path: str, max_size: int = 500_000) -> Optional[bytes]:
+    quality = 85
+    jpeg_path = None
+    try:
+        while quality >= 30:
+            fd, jpeg_path = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            result = subprocess.run(
+                ["sips", "-s", "format", "jpeg", "-s", "formatOptions", str(quality),
+                 source_path, "--out", jpeg_path],
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode != 0 or not os.path.exists(jpeg_path):
+                return None
+            size = os.path.getsize(jpeg_path)
+            if size <= max_size:
+                with open(jpeg_path, "rb") as f:
+                    return f.read()
+            os.unlink(jpeg_path)
+            jpeg_path = None
+            quality -= 10
+        if jpeg_path and os.path.exists(jpeg_path):
+            with open(jpeg_path, "rb") as f:
+                return f.read()
+    finally:
+        if jpeg_path and os.path.exists(jpeg_path):
+            os.unlink(jpeg_path)
+    return None
+
+
 def _macos_read_clipboard_image() -> Optional[bytes]:
     tiff_path = None
     png_path = None
@@ -60,7 +122,12 @@ def _macos_read_clipboard_image() -> Optional[bytes]:
         if result.returncode != 0 or not os.path.exists(tiff_path):
             return None
 
-        # Check if already PNG
+        file_size = os.path.getsize(tiff_path)
+        if file_size > 500_000:
+            compressed = _macos_compress_image_to_jpeg(tiff_path)
+            if compressed:
+                return compressed
+
         with open(tiff_path, "rb") as f:
             header = f.read(8)
         png_sig = b"\x89PNG\r\n\x1a\n"
@@ -68,7 +135,6 @@ def _macos_read_clipboard_image() -> Optional[bytes]:
             with open(tiff_path, "rb") as f:
                 return f.read()
 
-        # Convert TIFF to PNG using sips
         fd, png_path = tempfile.mkstemp(suffix=".png")
         os.close(fd)
         convert_result = subprocess.run(
@@ -88,13 +154,20 @@ def _macos_read_clipboard_image() -> Optional[bytes]:
             os.unlink(png_path)
 
 
-def _macos_write_clipboard_image(png_bytes: bytes) -> None:
+def _macos_write_clipboard_image(image_bytes: bytes) -> None:
     tmp_path = None
     try:
-        fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        ext = ".png"
+        png_sig = b"\x89PNG\r\n\x1a\n"
+        if image_bytes[:8] == png_sig:
+            ext = ".png"
+        elif image_bytes[:2] == b"\xff\xd8":
+            ext = ".jpg"
+
+        fd, tmp_path = tempfile.mkstemp(suffix=ext)
         os.close(fd)
         with open(tmp_path, "wb") as f:
-            f.write(png_bytes)
+            f.write(image_bytes)
 
         script = (
             'use framework "AppKit"\n'
@@ -118,10 +191,11 @@ def _macos_write_clipboard_image(png_bytes: bytes) -> None:
 
 def read_macos_clipboard_content() -> Optional[ClipboardContent]:
     if _macos_has_image_in_clipboard():
-        png_bytes = _macos_read_clipboard_image()
-        if png_bytes:
+        image_bytes = _macos_read_clipboard_image()
+        if image_bytes:
             try:
-                return ClipboardContent.from_image(png_bytes)
+                mime_type = "image/jpeg" if image_bytes[:2] == b"\xff\xd8" else "image/png"
+                return ClipboardContent.from_image(image_bytes, mime_type=mime_type)
             except ValueError:
                 pass
 
@@ -217,13 +291,136 @@ def _windows_read_clipboard_image() -> Optional[bytes]:
     return None
 
 
-def _windows_write_clipboard_image(png_bytes: bytes) -> None:
+def _windows_compress_image_to_jpeg(image_bytes: bytes, max_size: int = 500_000) -> Optional[bytes]:
+    tmp_in = None
+    tmp_out = None
+    try:
+        fd, tmp_in = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        with open(tmp_in, "wb") as f:
+            f.write(image_bytes)
+
+        quality = 85
+        while quality >= 30:
+            fd, tmp_out = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            script = (
+                "Add-Type -AssemblyName System.Drawing; "
+                f"$img = [System.Drawing.Image]::FromFile('{tmp_in.replace(chr(39), chr(39)+chr(39))}'); "
+                f"$encoder = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object {{ $_.FormatDescription -eq 'JPEG' }}; "
+                f"$ep = New-Object System.Drawing.Imaging.EncoderParameters(1); "
+                f"$ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, {quality}); "
+                f"$ms = New-Object System.IO.MemoryStream; "
+                f"$img.Save($ms, $encoder, $ep); "
+                f"$bytes = $ms.ToArray(); "
+                f"if ($bytes.Length -le {max_size}) {{ "
+                f"    [System.Convert]::ToBase64String($bytes) "
+                f"}} else {{ "
+                f"    'TOO_LARGE' "
+                f"}}; "
+                f"$img.Dispose()"
+            )
+            for ps_cmd in ("powershell", "pwsh"):
+                try:
+                    result = subprocess.run(
+                        [ps_cmd, "-NoProfile", "-NonInteractive", "-Command", script],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if result.returncode == 0:
+                        out = result.stdout.strip()
+                        if out and out != "TOO_LARGE":
+                            return base64.b64decode(out.encode("ascii"))
+                        break
+                except FileNotFoundError:
+                    continue
+
+            os.unlink(tmp_out)
+            tmp_out = None
+            quality -= 10
+
+        with open(tmp_in, "rb") as f:
+            return f.read()
+    finally:
+        if tmp_in and os.path.exists(tmp_in):
+            os.unlink(tmp_in)
+        if tmp_out and os.path.exists(tmp_out):
+            os.unlink(tmp_out)
+
+
+def _windows_compress_image_to_jpeg(image_bytes: bytes, max_size: int = 500_000) -> Optional[bytes]:
+    tmp_in = None
+    tmp_out = None
+    try:
+        fd, tmp_in = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        with open(tmp_in, "wb") as f:
+            f.write(image_bytes)
+
+        quality = 85
+        while quality >= 30:
+            fd, tmp_out = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            script = (
+                "Add-Type -AssemblyName System.Drawing; "
+                f"$img = [System.Drawing.Image]::FromFile('{tmp_in.replace(chr(39), chr(39)+chr(39))}'); "
+                f"$encoder = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object {{ $_.FormatDescription -eq 'JPEG' }}; "
+                f"$ep = New-Object System.Drawing.Imaging.EncoderParameters(1); "
+                f"$ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, {quality}); "
+                f"$ms = New-Object System.IO.MemoryStream; "
+                f"$img.Save($ms, $encoder, $ep); "
+                f"$bytes = $ms.ToArray(); "
+                f"if ($bytes.Length -le {max_size}) {{ "
+                f"    [System.Convert]::ToBase64String($bytes) "
+                f"}} else {{ "
+                f"    'TOO_LARGE' "
+                f"}}; "
+                f"$img.Dispose()"
+            )
+            for ps_cmd in ("powershell", "pwsh"):
+                try:
+                    result = subprocess.run(
+                        [ps_cmd, "-NoProfile", "-NonInteractive", "-Command", script],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if result.returncode == 0:
+                        out = result.stdout.strip()
+                        if out and out != "TOO_LARGE":
+                            return base64.b64decode(out.encode("ascii"))
+                        break
+                except FileNotFoundError:
+                    continue
+
+            os.unlink(tmp_out)
+            tmp_out = None
+            quality -= 10
+
+        with open(tmp_in, "rb") as f:
+            return f.read()
+    finally:
+        if tmp_in and os.path.exists(tmp_in):
+            os.unlink(tmp_in)
+        if tmp_out and os.path.exists(tmp_out):
+            os.unlink(tmp_out)
+
+
+def _windows_write_clipboard_image(image_bytes: bytes) -> None:
     tmp_path = None
     try:
-        fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        ext = ".png"
+        png_sig = b"\x89PNG\r\n\x1a\n"
+        if image_bytes[:8] == png_sig:
+            ext = ".png"
+        elif image_bytes[:2] == b"\xff\xd8":
+            ext = ".jpg"
+
+        fd, tmp_path = tempfile.mkstemp(suffix=ext)
         os.close(fd)
         with open(tmp_path, "wb") as f:
-            f.write(png_bytes)
+            f.write(image_bytes)
 
         escaped_path = tmp_path.replace("'", "''")
         script = (
@@ -264,6 +461,10 @@ def read_windows_clipboard_content() -> Optional[ClipboardContent]:
         png_bytes = _windows_read_clipboard_image()
         if png_bytes:
             try:
+                if len(png_bytes) > 500_000:
+                    compressed = _windows_compress_image_to_jpeg(png_bytes)
+                    if compressed:
+                        return ClipboardContent.from_image(compressed, mime_type="image/jpeg")
                 return ClipboardContent.from_image(png_bytes)
             except ValueError:
                 pass

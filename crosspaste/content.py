@@ -14,8 +14,6 @@ class ClipboardContent:
 
     MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB
 
-    MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB
-
     @classmethod
     def from_text(cls, text: str) -> "ClipboardContent":
         normalized = text.replace("\r\n", "\n")
@@ -28,29 +26,29 @@ class ClipboardContent:
         )
 
     @classmethod
-    def from_image(cls, png_bytes: bytes) -> "ClipboardContent":
-        if len(png_bytes) > cls.MAX_IMAGE_BYTES:
+    def from_image(cls, image_bytes: bytes, mime_type: str = "image/png") -> "ClipboardContent":
+        if len(image_bytes) > cls.MAX_IMAGE_BYTES:
             raise ValueError(
-                f"Image size {len(png_bytes)} bytes exceeds maximum size {cls.MAX_IMAGE_BYTES} bytes"
+                f"Image size {len(image_bytes)} bytes exceeds maximum size {cls.MAX_IMAGE_BYTES} bytes"
             )
-        payload = base64.b64encode(png_bytes).decode("ascii")
+        payload = base64.b64encode(image_bytes).decode("ascii")
         return cls(
             kind="image",
-            mime_type="image/png",
+            mime_type=mime_type,
             encoding="base64",
             payload_base64=payload,
         )
-
-    @classmethod
-    def from_image(cls, png_bytes: bytes) -> "ClipboardContent":
-        if len(png_bytes) > cls.MAX_IMAGE_BYTES:
-            raise ValueError(
-                f"Image size {len(png_bytes)} bytes exceeds maximum size {cls.MAX_IMAGE_BYTES} bytes"
-            )
-        payload = base64.b64encode(png_bytes).decode("ascii")
+        payload = base64.b64encode(image_bytes).decode("ascii")
         return cls(
             kind="image",
-            mime_type="image/png",
+            mime_type=mime_type,
+            encoding="base64",
+            payload_base64=payload,
+        )
+        payload = base64.b64encode(image_bytes).decode("ascii")
+        return cls(
+            kind="image",
+            mime_type=mime_type,
             encoding="base64",
             payload_base64=payload,
         )
@@ -101,4 +99,3 @@ class ClipboardContent:
             ]
         )
         return sha256(material.encode("utf-8")).hexdigest()
-
