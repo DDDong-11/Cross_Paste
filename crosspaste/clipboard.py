@@ -11,16 +11,18 @@ from .content import ClipboardContent
 
 
 def _macos_has_image_in_clipboard() -> bool:
-    script = """
-use framework "AppKit"
-set pb to current application's NSPasteboard's generalPasteboard()
-set tTypes to pb's types() as list
-if (tTypes's contains:(current application's NSPasteboardTypePNG as string)) or (tTypes's contains:(current application's NSPasteboardTypeTIFF as string)) then
-    return "yes"
-else
-    return "no"
-end if
-"""
+    script = (
+        'use framework "AppKit"\n'
+        'set pb to current application\'s NSPasteboard\'s generalPasteboard()\n'
+        'set tTypes to pb\'s types() as list\n'
+        'set pngType to current application\'s NSPasteboardTypePNG as string\n'
+        'set tiffType to current application\'s NSPasteboardTypeTIFF as string\n'
+        'if (tTypes contains pngType) or (tTypes contains tiffType) then\n'
+        '    return "yes"\n'
+        'else\n'
+        '    return "no"\n'
+        'end if\n'
+    )
     result = subprocess.run(
         ["osascript", "-l", "AppleScript", "-e", script],
         capture_output=True,
@@ -32,35 +34,58 @@ end if
 
 
 def _macos_read_clipboard_image() -> Optional[bytes]:
-    tmp_path = None
+    tiff_path = None
+    png_path = None
     try:
-        fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        fd, tiff_path = tempfile.mkstemp(suffix=".tiff")
         os.close(fd)
 
-        script = f"""
-use framework "AppKit"
-set pb to current application's NSPasteboard's generalPasteboard()
-set imgData to pb's dataForType:(current application's NSPasteboardTypePNG)
-if imgData is missing value then
-    set imgData to pb's dataForType:(current application's NSPasteboardTypeTIFF)
-end if
-if imgData is not missing value then
-    imgData's writeToFile:"{tmp_path}" atomically:true
-end if
-"""
+        script = (
+            'use framework "AppKit"\n'
+            'set pb to current application\'s NSPasteboard\'s generalPasteboard()\n'
+            'set theType to pb\'s availableTypeFromArray:{current application\'s NSPasteboardTypeTIFF, current application\'s NSPasteboardTypePNG}\n'
+            'if theType is not missing value then\n'
+            '    set imgData to pb\'s dataForType:theType\n'
+            '    if imgData is not missing value then\n'
+            '        set thePath to POSIX file "' + tiff_path + '"\n'
+            '        imgData\'s writeToFile:thePath atomically:true\n'
+            '    end if\n'
+            'end if\n'
+        )
         result = subprocess.run(
             ["osascript", "-l", "AppleScript", "-e", script],
             capture_output=True,
             check=False,
         )
-        if result.returncode != 0 or not os.path.exists(tmp_path):
+        if result.returncode != 0 or not os.path.exists(tiff_path):
             return None
 
-        with open(tmp_path, "rb") as f:
+        # Check if already PNG
+        with open(tiff_path, "rb") as f:
+            header = f.read(8)
+        png_sig = b"\x89PNG\r\n\x1a\n"
+        if header[:8] == png_sig:
+            with open(tiff_path, "rb") as f:
+                return f.read()
+
+        # Convert TIFF to PNG using sips
+        fd, png_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        convert_result = subprocess.run(
+            ["sips", "-s", "format", "png", tiff_path, "--out", png_path],
+            capture_output=True,
+            check=False,
+        )
+        if convert_result.returncode != 0 or not os.path.exists(png_path):
+            return None
+
+        with open(png_path, "rb") as f:
             return f.read()
     finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        if tiff_path and os.path.exists(tiff_path):
+            os.unlink(tiff_path)
+        if png_path and os.path.exists(png_path):
+            os.unlink(png_path)
 
 
 def _macos_write_clipboard_image(png_bytes: bytes) -> None:
@@ -71,14 +96,13 @@ def _macos_write_clipboard_image(png_bytes: bytes) -> None:
         with open(tmp_path, "wb") as f:
             f.write(png_bytes)
 
-        posix_path = tmp_path
-        script = f"""
-use framework "AppKit"
-set theImage to current application's NSImage's alloc()'s initWithContentsOfFile:"{posix_path}"
-set pb to current application's NSPasteboard's generalPasteboard()
-pb's clearContents()
-pb's writeObjects:{{theImage}}
-"""
+        script = (
+            'use framework "AppKit"\n'
+            'set theImage to current application\'s NSImage\'s alloc()\'s initWithContentsOfFile:"' + tmp_path + '"\n'
+            'set pb to current application\'s NSPasteboard\'s generalPasteboard()\n'
+            'pb\'s clearContents()\n'
+            'pb\'s writeObjects:{theImage}\n'
+        )
         result = subprocess.run(
             ["osascript", "-l", "AppleScript", "-e", script],
             capture_output=True,
