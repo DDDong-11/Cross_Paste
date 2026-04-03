@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import struct
 import threading
 import time
 from typing import Optional
@@ -11,7 +12,8 @@ LOGGER = logging.getLogger("crosspaste.discovery")
 
 DISCOVERY_PORT = 45893
 BROADCAST_INTERVAL = 5.0
-BROADCAST_ADDR = "<broadcast>"
+MULTICAST_GROUP = "239.255.0.1"
+BROADCAST_ADDR = "255.255.255.255"
 
 
 def _get_local_ips() -> set[str]:
@@ -45,9 +47,14 @@ class PeerDiscovery:
         LOGGER.info("Local IPs (will filter out): %s", self._local_ips)
 
     def start(self) -> None:
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 32)
+        self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 0)
+
+        mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GROUP), socket.INADDR_ANY)
+        self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+
         self._sock.bind(("", DISCOVERY_PORT))
         self._sock.settimeout(1.0)
 
@@ -74,6 +81,10 @@ class PeerDiscovery:
         assert self._sock is not None
         msg = json.dumps({"type": "hello", "port": self.port, "host": self.hostname}).encode()
         while not self._stop_event.is_set():
+            try:
+                self._sock.sendto(msg, (MULTICAST_GROUP, DISCOVERY_PORT))
+            except OSError:
+                pass
             try:
                 self._sock.sendto(msg, (BROADCAST_ADDR, DISCOVERY_PORT))
             except OSError:
