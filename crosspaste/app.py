@@ -408,51 +408,6 @@ def run_poll_loop(
             LOGGER.warning("Poll failed: %s", exc)
 
         time.sleep(poll_interval)
-                continue
-
-            LOGGER.debug(
-                "Peer snapshot: kind=%s version=%s digest=%s source=%s",
-                snapshot.content.kind,
-                snapshot.version,
-                snapshot.digest[:8],
-                snapshot.source_device_id[:12],
-            )
-
-            if snapshot.digest == last_seen_remote_digest:
-                time.sleep(poll_interval)
-                continue
-
-            last_seen_remote_digest = snapshot.digest
-
-            if snapshot.source_device_id == local_device_id:
-                LOGGER.debug("Skipping content from self")
-                time.sleep(poll_interval)
-                continue
-
-            if snapshot.content.kind not in ("text", "image"):
-                LOGGER.info(
-                    "Peer sent unsupported clipboard kind '%s'. Skipping.",
-                    snapshot.content.kind,
-                )
-                time.sleep(poll_interval)
-                continue
-
-            state.update_if_changed(snapshot.content, snapshot.source_device_id)
-            if write_incoming:
-                write_local_clipboard_content(snapshot.content)
-                LOGGER.info(
-                    "Applied peer clipboard: kind=%s version=%s bytes=%s",
-                    snapshot.content.kind,
-                    snapshot.version,
-                    len(snapshot.content.payload_base64),
-                )
-        except KeyboardInterrupt:
-            LOGGER.info("Stopping poll loop.")
-            return 0
-        except Exception as exc:
-            LOGGER.warning("Poll failed: %s", exc)
-
-        time.sleep(poll_interval)
 
 
 def fetch_latest_snapshot(server_url: str, request_timeout: float) -> Optional[ClipboardSnapshot]:
