@@ -290,6 +290,9 @@ def watch_local_clipboard(
 ) -> None:
     while not stop_event.is_set():
         try:
+            if state.is_watcher_suppressed():
+                stop_event.wait(poll_interval)
+                continue
             content = read_local_clipboard_content()
             if content is not None:
                 digest = content.digest()

@@ -26,10 +26,16 @@ class LatestClipboardState:
         self._updated_at = 0.0
         self._source_device_id = ""
         self._last_written_digest: Optional[str] = None
+        self._suppress_watcher_until = 0.0
 
     def mark_locally_written(self, digest: str) -> None:
         with self._lock:
             self._last_written_digest = digest
+            self._suppress_watcher_until = time() + 3.0
+
+    def is_watcher_suppressed(self) -> bool:
+        with self._lock:
+            return time() < self._suppress_watcher_until
 
     def was_just_written_locally(self, digest: str) -> bool:
         with self._lock:
