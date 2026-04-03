@@ -31,7 +31,7 @@ class LatestClipboardState:
     def mark_locally_written(self, digest: str) -> None:
         with self._lock:
             self._last_written_digest = digest
-            self._suppress_watcher_until = time() + 3.0
+            self._suppress_watcher_until = time() + 5.0
 
     def is_watcher_suppressed(self) -> bool:
         with self._lock:
