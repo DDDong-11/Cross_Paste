@@ -192,36 +192,15 @@ def run_agent(
     actual_peer_url = peer_url
     if auto_discover and not peer_url:
         assert discovery is not None
-        while not stop_event.is_set():
-            peers = discovery.get_known_peers()
-            if peers:
-                peer_ip = peers[0]
-                actual_peer_url = f"http://{peer_ip}:{port}/latest"
-                LOGGER.info("Auto-discovered peer: %s", actual_peer_url)
-                break
-            stop_event.wait(1.0)
+        LOGGER.info("Waiting for peer discovery...")
+        discovery.wait_for_peer(timeout=30.0)
+        actual_peer_url = discovery.get_peer_url()
+        if actual_peer_url:
+            LOGGER.info("Auto-discovered peer: %s", actual_peer_url)
 
     if not actual_peer_url:
         LOGGER.error("No peer URL provided and no peers discovered. Exiting.")
         stop_event.set()
-        if discovery:
-            discovery.stop()
-        return 1
-
-    LOGGER.info("%s agent polling peer %s", platform_name.capitalize(), actual_peer_url)
-    try:
-        return run_poll_loop(
-            state=state,
-            server_url=actual_peer_url,
-            poll_interval=poll_interval,
-            request_timeout=request_timeout,
-            write_incoming=True,
-            local_device_id=device_id,
-        )
-    finally:
-        stop_event.set()
-        if discovery:
-            discovery.stop()
         if discovery:
             discovery.stop()
         return 1
