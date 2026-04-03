@@ -26,10 +26,18 @@ class LatestClipboardState:
         self._updated_at = 0.0
         self._source_device_id = ""
         self._last_applied_remote_digest: Optional[str] = None
+        self._suppress_watcher_until = 0.0
 
     def mark_applied_from_remote(self, digest: str) -> None:
+        import time
         with self._lock:
             self._last_applied_remote_digest = digest
+            self._suppress_watcher_until = time.time() + 2.0
+
+    def is_watcher_suppressed(self) -> bool:
+        import time
+        with self._lock:
+            return time.time() < self._suppress_watcher_until
 
     def was_applied_from_remote(self, digest: str) -> bool:
         with self._lock:
