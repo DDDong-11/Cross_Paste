@@ -25,23 +25,15 @@ class LatestClipboardState:
         self._digest = ""
         self._updated_at = 0.0
         self._source_device_id = ""
-        self._last_applied_remote_digest: Optional[str] = None
-        self._suppress_watcher_until = 0.0
+        self._last_written_digest: Optional[str] = None
 
-    def mark_applied_from_remote(self, digest: str) -> None:
-        import time
+    def mark_locally_written(self, digest: str) -> None:
         with self._lock:
-            self._last_applied_remote_digest = digest
-            self._suppress_watcher_until = time.time() + 5.0
+            self._last_written_digest = digest
 
-    def is_watcher_suppressed(self) -> bool:
-        import time
+    def was_just_written_locally(self, digest: str) -> bool:
         with self._lock:
-            return time.time() < self._suppress_watcher_until
-
-    def was_applied_from_remote(self, digest: str) -> bool:
-        with self._lock:
-            return self._last_applied_remote_digest == digest
+            return self._last_written_digest == digest
 
     def update_if_changed(self, content: ClipboardContent, source_device_id: str) -> Optional[ClipboardSnapshot]:
         digest = content.digest()

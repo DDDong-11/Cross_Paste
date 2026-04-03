@@ -290,13 +290,10 @@ def watch_local_clipboard(
 ) -> None:
     while not stop_event.is_set():
         try:
-            if state.is_watcher_suppressed():
-                stop_event.wait(poll_interval)
-                continue
             content = read_local_clipboard_content()
             if content is not None:
                 digest = content.digest()
-                if state.was_applied_from_remote(digest):
+                if state.was_just_written_locally(digest):
                     continue
                 snapshot = state.update_if_changed(content, local_device_id)
                 if snapshot:
@@ -401,8 +398,12 @@ def run_poll_loop(
             if write_incoming:
                 try:
                     write_local_clipboard_content(snapshot.content)
-                    state.mark_applied_from_remote(snapshot.digest)
                     state.update_if_changed(snapshot.content, snapshot.source_device_id)
+                    import time
+                    time.sleep(0.2)
+                    readback = read_local_clipboard_content()
+                    if readback:
+                        state.mark_locally_written(readback.digest())
                     LOGGER.info(
                         "Applied peer clipboard: kind=%s version=%s bytes=%s",
                         snapshot.content.kind,
