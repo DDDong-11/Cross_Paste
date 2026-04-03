@@ -392,15 +392,20 @@ def run_poll_loop(
                 time.sleep(poll_interval)
                 continue
 
-            state.update_if_changed(snapshot.content, snapshot.source_device_id)
             if write_incoming:
-                write_local_clipboard_content(snapshot.content)
-                LOGGER.info(
-                    "Applied peer clipboard: kind=%s version=%s bytes=%s",
-                    snapshot.content.kind,
-                    snapshot.version,
-                    len(snapshot.content.payload_base64),
-                )
+                try:
+                    write_local_clipboard_content(snapshot.content)
+                    state.update_if_changed(snapshot.content, snapshot.source_device_id)
+                    LOGGER.info(
+                        "Applied peer clipboard: kind=%s version=%s bytes=%s",
+                        snapshot.content.kind,
+                        snapshot.version,
+                        len(snapshot.content.payload_base64),
+                    )
+                except Exception as write_exc:
+                    LOGGER.warning("Failed to write peer clipboard: %s", write_exc)
+            else:
+                state.update_if_changed(snapshot.content, snapshot.source_device_id)
         except KeyboardInterrupt:
             LOGGER.info("Stopping poll loop.")
             return 0
