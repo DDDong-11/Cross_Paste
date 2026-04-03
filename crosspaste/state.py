@@ -25,6 +25,15 @@ class LatestClipboardState:
         self._digest = ""
         self._updated_at = 0.0
         self._source_device_id = ""
+        self._last_applied_remote_digest: Optional[str] = None
+
+    def mark_applied_from_remote(self, digest: str) -> None:
+        with self._lock:
+            self._last_applied_remote_digest = digest
+
+    def was_applied_from_remote(self, digest: str) -> bool:
+        with self._lock:
+            return self._last_applied_remote_digest == digest
 
     def update_if_changed(self, content: ClipboardContent, source_device_id: str) -> Optional[ClipboardSnapshot]:
         digest = content.digest()
