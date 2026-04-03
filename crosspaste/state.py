@@ -32,7 +32,7 @@ class LatestClipboardState:
         import time
         with self._lock:
             self._last_applied_remote_digest = digest
-            self._suppress_watcher_until = time.time() + 2.0
+            self._suppress_watcher_until = time.time() + 5.0
 
     def is_watcher_suppressed(self) -> bool:
         import time
