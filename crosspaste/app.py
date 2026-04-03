@@ -192,9 +192,11 @@ def run_agent(
     actual_peer_url = peer_url
     if auto_discover and not peer_url:
         assert discovery is not None
-        LOGGER.info("Waiting for peer discovery...")
-        discovery.wait_for_peer(timeout=30.0)
+        LOGGER.info("Waiting for peer discovery (timeout 30s)...")
+        found = discovery.wait_for_peer(timeout=30.0)
+        LOGGER.info("wait_for_peer returned: %s", found)
         actual_peer_url = discovery.get_peer_url()
+        LOGGER.info("get_peer_url returned: %s", actual_peer_url)
         if actual_peer_url:
             LOGGER.info("Auto-discovered peer: %s", actual_peer_url)
 
@@ -353,13 +355,23 @@ def run_poll_loop(
     local_device_id: str,
 ) -> int:
     last_seen_remote_digest: Optional[str] = None
+    LOGGER.info("Starting poll loop, peer=%s, interval=%.1fs", server_url, poll_interval)
 
     while True:
         try:
             snapshot = fetch_latest_snapshot(server_url, request_timeout)
             if snapshot is None:
+                LOGGER.debug("Peer returned no content")
                 time.sleep(poll_interval)
                 continue
+
+            LOGGER.debug(
+                "Peer snapshot: kind=%s version=%s digest=%s source=%s",
+                snapshot.content.kind,
+                snapshot.version,
+                snapshot.digest[:8],
+                snapshot.source_device_id[:12],
+            )
 
             if snapshot.digest == last_seen_remote_digest:
                 time.sleep(poll_interval)
@@ -368,6 +380,7 @@ def run_poll_loop(
             last_seen_remote_digest = snapshot.digest
 
             if snapshot.source_device_id == local_device_id:
+                LOGGER.debug("Skipping content from self")
                 time.sleep(poll_interval)
                 continue
 
@@ -391,7 +404,52 @@ def run_poll_loop(
         except KeyboardInterrupt:
             LOGGER.info("Stopping poll loop.")
             return 0
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
+            LOGGER.warning("Poll failed: %s", exc)
+
+        time.sleep(poll_interval)
+                continue
+
+            LOGGER.debug(
+                "Peer snapshot: kind=%s version=%s digest=%s source=%s",
+                snapshot.content.kind,
+                snapshot.version,
+                snapshot.digest[:8],
+                snapshot.source_device_id[:12],
+            )
+
+            if snapshot.digest == last_seen_remote_digest:
+                time.sleep(poll_interval)
+                continue
+
+            last_seen_remote_digest = snapshot.digest
+
+            if snapshot.source_device_id == local_device_id:
+                LOGGER.debug("Skipping content from self")
+                time.sleep(poll_interval)
+                continue
+
+            if snapshot.content.kind not in ("text", "image"):
+                LOGGER.info(
+                    "Peer sent unsupported clipboard kind '%s'. Skipping.",
+                    snapshot.content.kind,
+                )
+                time.sleep(poll_interval)
+                continue
+
+            state.update_if_changed(snapshot.content, snapshot.source_device_id)
+            if write_incoming:
+                write_local_clipboard_content(snapshot.content)
+                LOGGER.info(
+                    "Applied peer clipboard: kind=%s version=%s bytes=%s",
+                    snapshot.content.kind,
+                    snapshot.version,
+                    len(snapshot.content.payload_base64),
+                )
+        except KeyboardInterrupt:
+            LOGGER.info("Stopping poll loop.")
+            return 0
+        except Exception as exc:
             LOGGER.warning("Poll failed: %s", exc)
 
         time.sleep(poll_interval)
